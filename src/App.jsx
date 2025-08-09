@@ -1,12 +1,10 @@
+// src/App.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { DEFAULT_FIREBASE_CONFIG } from "../firebaseConfig.js";
 
 /* ===================== КОНСТАНТЫ ===================== */
-// имя бота по умолчанию (без @)
-const DEFAULT_BOT_USERNAME = "pyatikantrop_online_bot";
-
-// масти/ранги 36-карточной колоды
+const DEFAULT_BOT_USERNAME = "pyatikantrop_online_bot"; // имя бота без @
 const SUITS = ["♠", "♥", "♦", "♣"];
 const RANKS = ["6", "7", "8", "9", "10", "J", "Q", "K", "A"];
 
@@ -23,7 +21,6 @@ async function ensureFirebase(cfg) {
     firebaseAuth = getAuth(firebaseApp);
     try { await signInAnonymously(firebaseAuth); } catch {}
   }
-  // отдаём API, которое используем дальше
   return { ref, onValue, set, update, get };
 }
 
@@ -40,28 +37,10 @@ async function ensureTelegram() {
 }
 
 /* ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===================== */
-// собрать колоду
-function mkDeck() {
-  const cards = [];
-  for (const s of SUITS) for (const r of RANKS) cards.push({ id:`${r}${s}`, rank:r, suit:s });
-  return cards;
-}
-// перетасовка
-function shuffle(arr, rng) {
-  const a=arr.slice();
-  for(let i=a.length-1;i>0;i--){
-    const j=Math.floor(rng()*(i+1));
-    [a[i],a[j]]=[a[j],a[i]];
-  }
-  return a;
-}
-// простой генератор псевдо-рандома с фиксируемым seed
-function rng32(seed){
-  let x=seed||88675123;
-  return ()=>{ x^=x<<13; x^=x>>>17; x^=x<<5; return ((x>>>0)%1_000_000)/1_000_000; };
-}
+function mkDeck(){ const cards=[]; for (const s of SUITS) for (const r of RANKS) cards.push({ id:`${r}${s}`, rank:r, suit:s }); return cards; }
+function shuffle(arr, rng){ const a=arr.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(rng()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a; }
+function rng32(seed){ let x=seed||88675123; return ()=>{ x^=x<<13; x^=x>>>17; x^=x<<5; return ((x>>>0)%1_000_000)/1_000_000; }; }
 
-// ценность карт в очках в конце раунда
 function cardValue(c){
   switch(c.rank){
     case "A": return 11;
@@ -73,56 +52,52 @@ function cardValue(c){
   }
 }
 
-// спец. правило «только дамы»: считаем иначе
+// очки, если на руках только дамы
 function queensScoreOnly(hand){
-  // все дамы → по 20, пиковая дама +20
   let score = 20 * hand.length;
   if (hand.some(c => c.rank==="Q" && c.suit==="♠")) score += 20;
-  return score; // четыре дамы = 80 (и +20 если ♠ присутствует)
+  return score; // 4 дамы = 80 (+20 если среди них ♠ — у тебя это отдельное правило)
 }
 
-// итог очков проигравшего
 function handScore(hand){
-  if (hand.length === 0) return 0;
+  if (!hand.length) return 0;
   const allQueens = hand.every(c=>c.rank==="Q");
-  if (allQueens) return queensScoreOnly(hand);
-  return hand.reduce((s,c)=>s+cardValue(c),0);
+  return allQueens ? queensScoreOnly(hand)
+                   : hand.reduce((s,c)=>s+cardValue(c),0);
 }
 
-// можно ли положить эту карту на верх стола при данных модификаторах
 function canPlay(card, top, chosenSuit, chain, aceBonus){
   if (!top) return true;
-  if (chain)        return card.rank===chain.rank;                         // во время цепочки 6/7 кладём только те же ранги
-  if (aceBonus)     return card.suit===top.suit;                            // после туза — ещё одна карта той же масти
-  if (chosenSuit)   return card.suit===chosenSuit || card.rank===top.rank;  // после 9 — выбранная масть, но ранг тоже ок
+  if (chain)      return card.rank===chain.rank;                  // во время цепочки 6/7 — только 6 или 7
+  if (aceBonus)   return card.suit===top.suit;                    // после туза — только та же масть
+  if (chosenSuit) return card.suit===chosenSuit || card.rank===top.rank; // после 9 — выбранная масть или совп. ранг
   return card.suit===top.suit || card.rank===top.rank;
 }
 
 /* ===================== СОСТОЯНИЕ РАУНДА ===================== */
-// старт раунда (с обработкой стартовой карты)
-// phase:
-//  - "toss" — жеребьёвка (авто)
-//  - "play" — обычная игра
+function rankWeight(r){ const order={ "6":1,"7":2,"8":3,"9":4,"10":5,"J":6,"Q":7,"K":8,"A":9 }; return order[r]||0; }
+function cardTxt(c){ return `${c.rank}${c.suit}`; }
+
 function startRound(prev=null, seed){
   const rng = rng32(seed ?? Math.floor(Math.random()*1e9));
   const deck = shuffle(mkDeck(), rng);
 
-  // жеребьёвка (каждому по 1, сравнение по «больше»)
+  // Жеребьёвка (авто, на «больше»)
   const tossA = deck.pop();
   const tossB = deck.pop();
   const goesFirst = rankWeight(tossA.rank) >= rankWeight(tossB.rank) ? 0 : 1;
 
-  // раздача
+  // Раздача по 5
   const hands = [deck.slice(-5), deck.slice(-10, -5)];
   deck.length -= 10;
 
-  // открываем верхнюю
+  // Верхняя карта
   const up = deck.pop();
   const discard = [up];
 
-  // эффект стартовой карты
+  // Эффекты верхней карты
   let chosenSuit=null, chain=null, mustChooseSuit=false, aceBonus=false;
-  let message = `Жеребьёвка: ${cardTxt(tossA)} vs ${cardTxt(tossB)} → первый ходит ${goesFirst===0?"Настя":"Вика"}. Верхняя карта: ${cardTxt(up)}.`;
+  let message = `Жеребьёвка: ${cardTxt(tossA)} vs ${cardTxt(tossB)} → первый ходит ${goesFirst===0?"Настя":"Вика"}. Верхняя: ${cardTxt(up)}.`;
   const current = goesFirst;
 
   if (up.rank==="6"){
@@ -139,7 +114,7 @@ function startRound(prev=null, seed){
   }
 
   return {
-    phase: "play",                    // сразу в игру (жеребьёвку показали в тексте)
+    phase: "play",
     seed: seed ?? Math.floor(Math.random()*1e9),
     draw: deck,
     discard,
@@ -155,20 +130,10 @@ function startRound(prev=null, seed){
   };
 }
 
-// «вес» карты в жеребьёвке
-function rankWeight(r){
-  const order = { "6":1,"7":2,"8":3,"9":4,"10":5,"J":6,"Q":7,"K":8,"A":9 };
-  return order[r] || 0;
-}
-// человеко-читаемый вид карты
-function cardTxt(c){ return `${c.rank}${c.suit}`; }
-
 /* ===================== ОСНОВНОЙ КОМПОНЕНТ ===================== */
 export default function App(){
-  // firebase config
-  const [cfg, setCfg] = useState({ ...DEFAULT_FIREBASE_CONFIG });
-
   // сетевое состояние
+  const [cfg, setCfg] = useState({ ...DEFAULT_FIREBASE_CONFIG });
   const [connected, setConnected] = useState(false);
   const [netMode, setNetMode] = useState("offline"); // offline | online
   const [roomCode, setRoomCode] = useState("");
@@ -184,21 +149,26 @@ export default function App(){
   // firebase refs
   const dbAPI = useRef(null);
   const roomRef = useRef(null);
-  const pushingRef = useRef(false); // лок на пуш состояния
-const sPlayRef = useRef(null);
-const sPenaltyRef = useRef(null);
-const sWinRef = useRef(null);
+  const pushingRef = useRef(false);
 
   /* ---------- Авто-инициализация Firebase ---------- */
- // авто-join, когда есть roomCode и уже подключен Firebase
-useEffect(() => {
-  if (netMode === "offline" && connected && roomCode && roomCode.length === 6) {
-    // тихая попытка присоединиться
-    joinRoom().catch(()=>{ /* молча, если комнаты нет */ });
-  }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [connected, roomCode]);
+  useEffect(() => {
+    (async () => {
+      if (!connected) {
+        const api = await ensureFirebase(DEFAULT_FIREBASE_CONFIG);
+        dbAPI.current = api;
+        setConnected(true);
+      }
+    })();
+  }, [connected]);
 
+  /* ---------- авто-join по ссылке из TG после подключения ---------- */
+  useEffect(() => {
+    if (netMode === "offline" && connected && roomCode && roomCode.length === 6) {
+      joinRoom().catch(()=>{});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, roomCode]);
 
   /* ---------- Telegram init ---------- */
   useEffect(()=>{ (async()=>{
@@ -210,13 +180,12 @@ useEffect(() => {
     if (user?.first_name) {
       const me = user.first_name + (user.username ? ` (@${user.username})` : "");
       setTgName(me);
-      // показываем имя внизу (Настя = нижний), «Вика» наверху
       setState(prev => ({ ...prev, pNames: ["Настя","Вика"] }));
     }
     if (startParam && /^[0-9]{6}$/.test(startParam)) setRoomCode(startParam);
   })(); }, []);
 
-  /* ---------- Применить указанный вручную конфиг ---------- */
+  /* ---------- Применить конфиг вручную (если нужно) ---------- */
   async function applyConfig(){
     const api = await ensureFirebase(cfg);
     dbAPI.current = api; setConnected(true);
@@ -224,7 +193,7 @@ useEffect(() => {
 
   function labelPlayer(p){ return state.pNames ? state.pNames[p] : (p===0?"Игрок A":"Игрок B"); }
 
-  /* ---------- Создать комнату (онлайн) ---------- */
+  /* ---------- Создать комнату ---------- */
   async function createRoom(){
     if (!connected || !dbAPI.current) return alert("Нажми Apply Config");
     const code = (Math.floor(100000+Math.random()*900000)).toString();
@@ -234,7 +203,6 @@ useEffect(() => {
     const r = api.ref(firebaseDb, `rooms/${code}`);
     const round = startRound({ pNames: ["Настя","Вика"] }, undefined);
 
-    // текущий авторизованный анонимный uid
     const { getAuth } = await import("firebase/auth");
     const authUid = getAuth().currentUser?.uid || "host";
 
@@ -242,7 +210,7 @@ useEffect(() => {
     roomRef.current = r; setNetMode("online"); setPlayerId(0); subscribeRoom(r);
   }
 
-  /* ---------- Присоединиться к комнате ---------- */
+  /* ---------- Присоединиться ---------- */
   async function joinRoom(){
     if (!connected || !dbAPI.current) return alert("Нажми Apply Config");
     if (!roomCode) return alert("Введи 6-значный Room code");
@@ -270,7 +238,7 @@ useEffect(() => {
     roomRef.current = r; setNetMode("online"); subscribeRoom(r);
   }
 
-  /* ---------- Подписка на состояние комнаты ---------- */
+  /* ---------- Подписка ---------- */
   function subscribeRoom(r){
     if (!dbAPI.current) return;
     dbAPI.current.onValue(r, (snap)=>{
@@ -280,28 +248,24 @@ useEffect(() => {
     });
   }
 
-  /* ---------- Пушим новое состояние игры ---------- */
- async function pushGame(next){
-  if (pushingRef.current) return;        // защита от спама
-  pushingRef.current = true;
-
-  try {
-    if (netMode!=="online" || !roomRef.current || !dbAPI.current) {
-      setState(next);
-    } else {
-      await dbAPI.current.update(roomRef.current, { game: next, updatedAt: Date.now() });
+  /* ---------- Пушим новое состояние ---------- */
+  async function pushGame(next){
+    if (pushingRef.current) return;
+    pushingRef.current = true;
+    try {
+      if (netMode!=="online" || !roomRef.current || !dbAPI.current) {
+        setState(next);
+      } else {
+        await dbAPI.current.update(roomRef.current, { game: next, updatedAt: Date.now() });
+      }
+    } finally {
+      pushingRef.current = false;
     }
-  } finally {
-    pushingRef.current = false;
   }
-}
 
-
-  /* ---------- Основное действие: положить карту ---------- */
+  /* ---------- Положить карту ---------- */
   function playCard(card){
     if (state.roundOver || state.gameOver?.winner!==null) return;
-
-    // в онлайне ходит только «свой» игрок; в solo можно обоими
     if (!solo && netMode==="online" && state.current!==playerId) return;
 
     const p = state.current;
@@ -319,16 +283,13 @@ useEffect(() => {
     let msg = `${labelPlayer(p)} положил(а) ${cardTxt(card)}.`;
 
     if (chain){
-      // продолжаем цепочку 6/7
       chain = { rank: chain.rank, count: chain.count + 1 };
       next = (p===0?1:0);
       msg += ` Цепочка ${chain.rank}×${chain.count}.`;
     } else if (state.aceBonus){
-      // второй ход после туза
       next = (p===0?1:0);
       msg += " Бонус туза использован.";
     } else {
-      // новая ситуация
       if (card.rank==="6"){ chain={rank:"6",count:1}; next=(p===0?1:0); msg+=" 6-цепочка (+2)."; }
       else if (card.rank==="7"){ chain={rank:"7",count:1}; next=(p===0?1:0); msg+=" 7-цепочка (+1)."; }
       else if (card.rank==="9"){ mustChooseSuit=true; next=p; msg+=" Выбери масть."; }
@@ -339,7 +300,7 @@ useEffect(() => {
     pushGame({ ...state, hands, discard, current: next, chain, chosenSuit, aceBonus, mustChooseSuit, message: msg });
   }
 
-  /* ---------- Взять штраф во время цепочки 6/7 ---------- */
+  /* ---------- Взять штраф (во время цепочки) ---------- */
   function drawPenalty(){
     if (!state.chain) return;
     if (!solo && netMode==="online" && state.current!==playerId) return;
@@ -358,23 +319,23 @@ useEffect(() => {
 
   /* ---------- Нет хода → взять 1 и пас ---------- */
   function drawIfNoMove(){
-  if (state.chain) return; // при цепочке жмём «штраф»
-  if (!solo && netMode==="online" && state.current!==playerId) return;
+    if (state.chain) return;       // при цепочке — жми «штраф»
+    if (state.aceBonus) return;    // после туза нужно докладывать той же масти
+    if (!solo && netMode==="online" && state.current!==playerId) return;
 
-  const p = state.current;
-  const draw = state.draw.slice();
-  const c = draw.pop() || null;
+    const p = state.current;
+    const draw = state.draw.slice();
+    const c = draw.pop() || null;
 
-  const hands=[state.hands[0].slice(), state.hands[1].slice()];
-  if (c) hands[p].push(c);
+    const hands=[state.hands[0].slice(), state.hands[1].slice()];
+    if (c) hands[p].push(c);
 
-  const tookText = c ? "взял(а) 1" : "колода пуста — пас без взятия";
-  const next=p===0?1:0;
+    const tookText = c ? "взял(а) 1" : "колода пуста — пас без взятия";
+    const next=p===0?1:0;
 
-  pushGame({ ...state, hands, draw, current: next, chosenSuit:null,
-    aceBonus:false, mustChooseSuit:false, message: `${labelPlayer(p)} ${tookText}.` });
-}
-
+    pushGame({ ...state, hands, draw, current: next, chosenSuit:null,
+      aceBonus:false, mustChooseSuit:false, message: `${labelPlayer(p)} ${tookText}.` });
+  }
 
   /* ---------- Выбор масти после 9 ---------- */
   function chooseSuit(s){
@@ -387,11 +348,11 @@ useEffect(() => {
     pushGame({ ...state, mustChooseSuit:false, current: next, message:`Масть подтверждена. Ход: ${labelPlayer(next)}.` });
   }
 
-  /* ---------- Детектор конца раунда + подсчёт очков ---------- */
+  /* ---------- Конец раунда ---------- */
   useMemo(()=>{
     const p0=state.hands[0].length, p1=state.hands[1].length;
     if (!state.roundOver && (p0===0 || p1===0)){
-      const winner = p0===0?0:1;              // кто опустошил руку
+      const winner = p0===0?0:1;
       const loser  = winner===0?1:0;
       const loserHand = state.hands[loser];
 
@@ -399,11 +360,9 @@ useEffect(() => {
       let pts = onlyQueens ? queensScoreOnly(loserHand) : handScore(loserHand);
 
       const banks=[...state.banks];
-      if (onlyQueens) banks[loser] -= pts;  // дамы — вычитаем
-      else            banks[loser] += pts;  // обычные карты — прибавляем
+      if (onlyQueens) banks[loser] -= pts; else banks[loser] += pts;
 
       let gameOver = state.gameOver || {winner:null,loser:null,reason:null};
-
       if (banks[0]>=120 || banks[1]>=120){
         const l = banks[0]>=120 ? 0 : 1;
         const w = l===0?1:0;
@@ -420,7 +379,7 @@ useEffect(() => {
       };
       pushGame(next);
     }
-  }, [state.hands[0].length, state.hands[1].length, state.roundOver]); // eslint-disable-line
+  }, [state.hands[0].length, state.hands[1].length, state.roundOver]);
 
   /* ---------- Новый раунд / локальный сброс ---------- */
   function nextRound(){ if (state.gameOver?.winner!==null) return; pushGame(startRound(state, state.seed+1)); }
@@ -449,50 +408,44 @@ useEffect(() => {
     ? `Игра окончена: победа — ${labelPlayer(state.gameOver.winner)}. ${state.gameOver.reason}.`
     : `Ход: ${labelPlayer(state.current)}${netMode==="online"&&!solo ? (state.current===playerId?" • твой ход":" • ждём соперника") : (solo?" • SOLO (играешь за обоих)":"")}`;
 
-  /* ---------- множество «сыграемых» карт в руке ---------- */
-  const playable = new Set(
-    state.hands[state.current]
+  /* ---------- Сеты «сыграемых» карт для каждой руки ---------- */
+  const playableBottom = new Set(
+    state.hands[0]
       .filter(c=>canPlay(c, top, state.chosenSuit, state.chain, state.aceBonus))
       .map(c=>c.id)
   );
-  // playable для верхнего игрока (Вика) в solo-режиме
-const playableTop = new Set(
-  state.hands[1]
-    .filter(c => canPlay(c, top, state.chosenSuit, state.chain, state.aceBonus))
-    .map(c => c.id)
-);
-
+  const playableTop = new Set(
+    state.hands[1]
+      .filter(c=>canPlay(c, top, state.chosenSuit, state.chain, state.aceBonus))
+      .map(c=>c.id)
+  );
 
   /* ===================== UI ===================== */
   return (
     <div className="min-h-screen w-full"
          style={{background:"radial-gradient(circle at 50% 20%, #0f3c2c, #071c15 60%, #05130e 100%)"}}>
       <div className="max-w-7xl mx-auto p-4">
-        {/* ------- заголовок и быстрые действия ------- */}
+        {/* заголовок */}
         <header className="flex flex-wrap items-center gap-2 justify-between mb-3">
-          <h1 className="text-xl md:text-2xl font-bold text-emerald-100">
-            🎴 Пятикарточный Пятикантроп — Online (Telegram)
-          </h1>
+          <h1 className="text-xl md:text-2xl font-bold text-emerald-100">🎴 Пятикарточный Пятикантроп — Online (Telegram)</h1>
           <div className="flex flex-wrap items-center gap-2">
             <label className="flex items-center gap-2 text-emerald-200 text-sm">
               <input type="checkbox" checked={solo} onChange={e=>setSolo(e.target.checked)} />
               Solo (играю за двоих)
             </label>
-            <button className="px-3 py-2 rounded-2xl bg-slate-800/80 text-slate-100 border border-slate-700 hover:bg-slate-700"
-                    onClick={resetLocal}>New Local</button>
+            <button className="px-3 py-2 rounded-2xl bg-slate-800/80 text-slate-100 border border-slate-700 hover:bg-slate-700" onClick={resetLocal}>New Local</button>
             {state.roundOver && state.gameOver?.winner===null && (
-              <button className="px-3 py-2 rounded-2xl bg-emerald-700 hover:bg-emerald-600"
-                      onClick={nextRound}>Next Round</button>
+              <button className="px-3 py-2 rounded-2xl bg-emerald-700 hover:bg-emerald-600" onClick={nextRound}>Next Round</button>
             )}
           </div>
         </header>
 
-        {/* ------- статус/сообщение — на белом фоне ------- */}
+        {/* статус/сообщение — на белом фоне */}
         <div className="mb-3 px-3 py-2 rounded-xl border shadow-sm text-slate-800 bg-white/95">
           {turnText}{state.message ? ` • ${state.message}` : ""}
         </div>
 
-        {/* ------- конфиг показываем, если ещё не подключены ------- */}
+        {/* конфиг показываем, если ещё не подключены */}
         {!connected && (
           <div className="grid md:grid-cols-3 gap-3 mb-4">
             <Panel title="Firebase Config">
@@ -502,24 +455,21 @@ const playableTop = new Set(
                          placeholder={k} value={cfg[k]} onChange={e=>setCfg((p)=>({...p,[k]:e.target.value}))}/>
                 ))}
               </div>
-              <button className="mt-2 px-3 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-600"
-                      onClick={applyConfig}>Apply Config</button>
+              <button className="mt-2 px-3 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-600" onClick={applyConfig}>Apply Config</button>
             </Panel>
           </div>
         )}
 
-        {/* ------- панель комнаты и инвайта ------- */}
+        {/* панель комнаты и инвайта */}
         <div className="grid md:grid-cols-3 gap-3 mb-4">
           <Panel title="Online Room">
             <div className="flex gap-2 mb-2">
-              <button className="px-3 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600"
-                      onClick={createRoom} disabled={!connected}>Create Room</button>
+              <button className="px-3 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600" onClick={createRoom} disabled={!connected}>Create Room</button>
               <input className="flex-1 px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 text-emerald-100"
                      placeholder="Enter 6-digit code"
                      value={roomCode}
                      onChange={e=>setRoomCode(e.target.value.replace(/\D/g,"").slice(0,6))} />
-              <button className="px-3 py-2 rounded-xl bg-amber-700 hover:bg-amber-600"
-                      onClick={joinRoom} disabled={!connected}>Join</button>
+              <button className="px-3 py-2 rounded-xl bg-amber-700 hover:bg-amber-600" onClick={joinRoom} disabled={!connected}>Join</button>
             </div>
             <div className="text-xs text-emerald-200">
               {netMode==="online"? `Room: ${roomCode} • Ты — ${playerId===0?"нижний":"верхний"} игрок` : "Offline mode"}
@@ -532,8 +482,7 @@ const playableTop = new Set(
                      placeholder="Bot username (без @)"
                      value={botUsername}
                      onChange={e=>setBotUsername(e.target.value.replace(/^@/, ""))} />
-              <button className="px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-600"
-                      onClick={copyInvite}>Invite</button>
+              <button className="px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-600" onClick={copyInvite}>Invite</button>
             </div>
             <div className="text-[11px] opacity-70 mt-1 text-emerald-200">
               Ссылка вида: t.me/&lt;bot&gt;?startapp=ROOMCODE
@@ -543,22 +492,20 @@ const playableTop = new Set(
           <div />
         </div>
 
-        {/* ------- игровое поле ------- */}
+        {/* игровое поле */}
         <Table>
-          {/* верхний игрок — Вика (не переворачиваем label!) */}
-          <{/* верхний игрок */}
-<Seat label={`${state.pNames?.[1] || "Вика"}`} facing="down" highlight={state.current===1}>
-  <Hand
-    cards={state.hands[1]}
-    hidden={true} // карты Вики всегда скрыты
-    selectable={false}
-    canPlay={() => false}
-    onSelect={playCard}
-  />
-</Seat>
+          {/* верхний игрок — Вика (имя НЕ переворачиваем; переворачиваются только карты) */}
+          <Seat label={`${state.pNames?.[1] || "Вика"}`} facing="down" highlight={state.current===1}>
+            <Hand
+              cards={state.hands[1]}
+              hidden={!solo}                               // в SOLO показываем карты Вики
+              selectable={solo && state.current===1}       // кликать можно, если SOLO и её ход
+              canPlay={(c)=> playableTop.has(c.id)}
+              onSelect={playCard}
+            />
+          </Seat>
 
-
-          {/* центр стола: сброс, кнопки действий */}
+          {/* центр стола */}
           <div className="flex flex-col items-center gap-3">
             <div className="flex items-center gap-2">
               <AnimatePresence initial={false}>
@@ -574,7 +521,6 @@ const playableTop = new Set(
               </AnimatePresence>
             </div>
 
-            {/* подсказки по цепочке/выбору масти */}
             {state.chain && (
               <div className="px-3 py-2 rounded-xl bg-rose-900/60 border border-rose-800 text-rose-100 text-sm">
                 Цепочка: <b>{state.chain.rank}</b> × <b>{state.chain.count}</b>. Разрешены только {state.chain.rank}.
@@ -587,7 +533,7 @@ const playableTop = new Set(
               </div>
             )}
 
-            {/* действия хода — на белых кнопках для читабельности */}
+            {/* действия хода (белые кнопки для читабельности) */}
             <div className="flex gap-2">
               {!state.chain && (
                 <button className="px-3 py-2 rounded-xl border bg-white text-slate-800 hover:shadow"
@@ -608,17 +554,16 @@ const playableTop = new Set(
 
           {/* нижний игрок — Настя */}
           <Seat label={`${state.pNames?.[0] || "Настя"} (ты)`} facing="up" highlight={state.current===0}>
-  <Hand
-    cards={state.hands[0]}
-    selectable={solo || state.current===0}             // кликать — если solo или твой ход
-    canPlay={(c)=> playableBottom.has(c.id)}
-    onSelect={playCard}
-  />
-</Seat>
-
+            <Hand
+              cards={state.hands[0]}
+              selectable={solo || state.current===0}
+              canPlay={(c)=> playableBottom.has(c.id)}
+              onSelect={playCard}
+            />
+          </Seat>
         </Table>
 
-        {/* ------- банки и «итоги» ------- */}
+        {/* банки и итоги */}
         <div className="grid md:grid-cols-3 gap-3 mt-4">
           <Panel title="Банк Насти"><div className="text-3xl font-semibold text-emerald-200">{state.banks[0]}</div></Panel>
           <Panel title="">
@@ -635,11 +580,11 @@ const playableTop = new Set(
           <Panel title="Банк Вики"><div className="text-3xl font-semibold text-emerald-200">{state.banks[1]}</div></Panel>
         </div>
 
-        {/* ------- правила (светлее фон) ------- */}
+        {/* правила (светлее) */}
         <details className="mt-6 rounded-2xl p-4 border bg-emerald-50/90 text-emerald-900">
           <summary className="cursor-pointer select-none font-semibold">Краткие правила</summary>
           <ul className="list-disc pl-6 mt-3 text-sm space-y-1">
-            <li>Матч по масти или рангу. 6→+2 (цепочка), 7→+1 (цепочка), 9→смена масти, A→ещё ход той же масти.</li>
+            <li>Совпадение по масти или рангу. 6→+2 (цепочка), 7→+1 (цепочка), 9→смена масти, A→ещё ход той же масти.</li>
             <li>Во время цепочки 6/7 разрешены только 6/7 соответственно; иначе берёшь весь штраф и пас.</li>
             <li>Конец раунда: соперник считает очки за свои карты. Если только дамы — их сумма вычитается (Q♠ +20).</li>
             <li>Кто набрал 120+, тот проиграл. Достиг −120 за счёт дам — мгновенная победа.</li>
@@ -660,15 +605,14 @@ function Panel({ title, children }){
   );
 }
 
-// аккуратные белые кнопки — используем выше для действий
 function ActionButton({children,onClick}){
   return (
-    <button className="px-3 py-2 rounded-xl border bg-white text-slate-800 hover:shadow"
-            onClick={onClick}>{children}</button>
+    <button className="px-3 py-2 rounded-xl border bg-white text-slate-800 hover:shadow" onClick={onClick}>
+      {children}
+    </button>
   );
 }
 
-// граница стола + приятные тени
 function Table({children}){
   return (
     <div className="rounded-[32px] p-6 md:p-8 border-4 border-emerald-900 shadow-2xl"
@@ -681,7 +625,7 @@ function Table({children}){
   );
 }
 
-// ВАЖНО: лейбл НЕ ПОВОРАЧИВАЕМ, поворачиваем только зону карт (чтобы имя «Вика» не было вверх ногами)
+// Имя НЕ поворачиваем; поворачиваем только карты у верхнего.
 function Seat({label, children, facing, highlight}){
   return (
     <div className="w-full">
@@ -693,33 +637,35 @@ function Seat({label, children, facing, highlight}){
   );
 }
 
-// Рука: интерактивная/скрытая
 function Hand({ cards, hidden=false, selectable=false, canPlay, onSelect }){
   return (
     <div className="flex flex-wrap gap-2 items-center justify-center">
       {cards.map((c, i)=>{
         const can = selectable && canPlay ? canPlay(c) : false;
         return (
-         <motion.button
-  layout
-  key={c.id+"-"+i}
-  onClick={()=> onSelect && onSelect(c)}
-  disabled={hidden || (selectable && !can)}
-  whileHover={(!hidden && can) ? { y: -6 } : {}}
-  initial={{ opacity: 0, y: hidden ? 0 : 12, scale: hidden ? 1 : 0.98 }}
-  animate={{ opacity: 1, y: 0, scale: 1 }}
-  transition={{ type:"spring", stiffness:420, damping:28 }}
->
-  <PlayingCard ... />
-</motion.button>
-
+          <motion.button
+            layout
+            key={c.id+"-"+i}
+            onClick={()=> onSelect && onSelect(c)}
+            disabled={hidden || (selectable && !can)}
+            whileHover={(!hidden && can) ? { y: -6 } : {}}
+            initial={{ opacity: 0, y: hidden ? 0 : 12, scale: hidden ? 1 : 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ type:"spring", stiffness:420, damping:28 }}
+          >
+            <PlayingCard
+              card={hidden ? {id:"?", rank:"6", suit:"♣"} : c}
+              faceDown={hidden}
+              selectable={selectable}
+              disabled={hidden || (selectable && !can)}
+            />
+          </motion.button>
         );
       })}
     </div>
   );
 }
 
-// Карта: аккуратный внешний вид + лёгкая анимация
 function PlayingCard({ card, faceDown=false, raised=false, selectable=false, disabled=false }){
   const red = card.suit==="♥" || card.suit==="♦";
   return (
