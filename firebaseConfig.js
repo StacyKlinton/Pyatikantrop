@@ -1,4 +1,4 @@
-// firebaseConfig.js (в корне репо)
+// firebaseConfig.js
 export const DEFAULT_FIREBASE_CONFIG = {
   apiKey: "AIzaSyCPhzohvNOW77WONxPpgK9mCPXl84CGOEc",
   authDomain: "pyatikantrop-game.firebaseapp.com",
