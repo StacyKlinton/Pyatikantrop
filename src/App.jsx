@@ -184,17 +184,21 @@ export default function App(){
   // firebase refs
   const dbAPI = useRef(null);
   const roomRef = useRef(null);
+  const pushingRef = useRef(false); // лок на пуш состояния
+const sPlayRef = useRef(null);
+const sPenaltyRef = useRef(null);
+const sWinRef = useRef(null);
 
   /* ---------- Авто-инициализация Firebase ---------- */
-  useEffect(() => {
-    (async () => {
-      if (!connected) {
-        const api = await ensureFirebase(DEFAULT_FIREBASE_CONFIG);
-        dbAPI.current = api;
-        setConnected(true);
-      }
-    })();
-  }, [connected]);
+ // авто-join, когда есть roomCode и уже подключен Firebase
+useEffect(() => {
+  if (netMode === "offline" && connected && roomCode && roomCode.length === 6) {
+    // тихая попытка присоединиться
+    joinRoom().catch(()=>{ /* молча, если комнаты нет */ });
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [connected, roomCode]);
+
 
   /* ---------- Telegram init ---------- */
   useEffect(()=>{ (async()=>{
@@ -277,14 +281,21 @@ export default function App(){
   }
 
   /* ---------- Пушим новое состояние игры ---------- */
-  async function pushGame(next){
-    // offline или solo — просто локально меняем
+ async function pushGame(next){
+  if (pushingRef.current) return;        // защита от спама
+  pushingRef.current = true;
+
+  try {
     if (netMode!=="online" || !roomRef.current || !dbAPI.current) {
-      setState(next); 
-      return; 
+      setState(next);
+    } else {
+      await dbAPI.current.update(roomRef.current, { game: next, updatedAt: Date.now() });
     }
-    await dbAPI.current.update(roomRef.current, { game: next, updatedAt: Date.now() });
+  } finally {
+    pushingRef.current = false;
   }
+}
+
 
   /* ---------- Основное действие: положить карту ---------- */
   function playCard(card){
@@ -347,19 +358,23 @@ export default function App(){
 
   /* ---------- Нет хода → взять 1 и пас ---------- */
   function drawIfNoMove(){
-    if (state.chain) return; // при цепочке жмём «штраф»
-    if (!solo && netMode==="online" && state.current!==playerId) return;
+  if (state.chain) return; // при цепочке жмём «штраф»
+  if (!solo && netMode==="online" && state.current!==playerId) return;
 
-    const p=state.current;
-    const draw=state.draw.slice();
-    const c=draw.pop()||null;
-    const hands=[state.hands[0].slice(), state.hands[1].slice()];
-    if(c) hands[p].push(c);
+  const p = state.current;
+  const draw = state.draw.slice();
+  const c = draw.pop() || null;
 
-    const next=p===0?1:0;
-    pushGame({ ...state, hands, draw, current: next, chosenSuit:null,
-      aceBonus:false, mustChooseSuit:false, message: `${labelPlayer(p)} взял(а) 1 и пас.` });
-  }
+  const hands=[state.hands[0].slice(), state.hands[1].slice()];
+  if (c) hands[p].push(c);
+
+  const tookText = c ? "взял(а) 1" : "колода пуста — пас без взятия";
+  const next=p===0?1:0;
+
+  pushGame({ ...state, hands, draw, current: next, chosenSuit:null,
+    aceBonus:false, mustChooseSuit:false, message: `${labelPlayer(p)} ${tookText}.` });
+}
+
 
   /* ---------- Выбор масти после 9 ---------- */
   function chooseSuit(s){
@@ -440,6 +455,13 @@ export default function App(){
       .filter(c=>canPlay(c, top, state.chosenSuit, state.chain, state.aceBonus))
       .map(c=>c.id)
   );
+  // playable для верхнего игрока (Вика) в solo-режиме
+const playableTop = new Set(
+  state.hands[1]
+    .filter(c => canPlay(c, top, state.chosenSuit, state.chain, state.aceBonus))
+    .map(c => c.id)
+);
+
 
   /* ===================== UI ===================== */
   return (
@@ -524,9 +546,17 @@ export default function App(){
         {/* ------- игровое поле ------- */}
         <Table>
           {/* верхний игрок — Вика (не переворачиваем label!) */}
-          <Seat label={`${state.pNames?.[1] || "Вика"}`} facing="down" highlight={state.current===1}>
-            <Hand cards={state.hands[1]} hidden />
-          </Seat>
+          <{/* верхний игрок */}
+<Seat label={`${state.pNames?.[1] || "Вика"}`} facing="down" highlight={state.current===1}>
+  <Hand
+    cards={state.hands[1]}
+    hidden={true} // карты Вики всегда скрыты
+    selectable={false}
+    canPlay={() => false}
+    onSelect={playCard}
+  />
+</Seat>
+
 
           {/* центр стола: сброс, кнопки действий */}
           <div className="flex flex-col items-center gap-3">
@@ -578,13 +608,14 @@ export default function App(){
 
           {/* нижний игрок — Настя */}
           <Seat label={`${state.pNames?.[0] || "Настя"} (ты)`} facing="up" highlight={state.current===0}>
-            <Hand
-              cards={state.hands[0]}
-              selectable
-              canPlay={(c)=>playable.has(c.id)}
-              onSelect={playCard}
-            />
-          </Seat>
+  <Hand
+    cards={state.hands[0]}
+    selectable={solo || state.current===0}             // кликать — если solo или твой ход
+    canPlay={(c)=> playableBottom.has(c.id)}
+    onSelect={playCard}
+  />
+</Seat>
+
         </Table>
 
         {/* ------- банки и «итоги» ------- */}
@@ -669,19 +700,19 @@ function Hand({ cards, hidden=false, selectable=false, canPlay, onSelect }){
       {cards.map((c, i)=>{
         const can = selectable && canPlay ? canPlay(c) : false;
         return (
-          <motion.button
-            layout
-            key={c.id+"-"+i}
-            onClick={()=> onSelect && onSelect(c)}
-            disabled={hidden || (selectable && !can)}
-            whileHover={(!hidden && can) ? { y: -6 } : {}}
-            transition={{ type:"spring", stiffness:400, damping:30 }}
-          >
-            <PlayingCard card={hidden? {id:"?",rank:"6",suit:"♣"} : c}
-                         faceDown={hidden}
-                         selectable={selectable}
-                         disabled={hidden || (selectable && !can)} />
-          </motion.button>
+         <motion.button
+  layout
+  key={c.id+"-"+i}
+  onClick={()=> onSelect && onSelect(c)}
+  disabled={hidden || (selectable && !can)}
+  whileHover={(!hidden && can) ? { y: -6 } : {}}
+  initial={{ opacity: 0, y: hidden ? 0 : 12, scale: hidden ? 1 : 0.98 }}
+  animate={{ opacity: 1, y: 0, scale: 1 }}
+  transition={{ type:"spring", stiffness:420, damping:28 }}
+>
+  <PlayingCard ... />
+</motion.button>
+
         );
       })}
     </div>
