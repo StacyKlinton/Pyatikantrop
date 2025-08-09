@@ -629,13 +629,19 @@ function Table({children}){
 function Seat({label, children, facing, highlight}){
   return (
     <div className="w-full">
-      <div className={`mb-2 text-center text-sm ${highlight?"text-amber-300":"text-emerald-200/80"}`}>{label}</div>
-      <div className={`flex flex-wrap gap-2 items-center justify-center ${facing==="down"?"rotate-180":""}`}>
+      {/* имя оставляем как есть */}
+      <div className={`mb-2 text-center text-sm ${highlight ? "text-amber-300" : "text-emerald-200/80"}`}>
+        {label}
+      </div>
+
+      {/* ВАЖНО: без rotate-180, чтобы карты были «норм» */}
+      <div className="flex flex-wrap gap-2 items-center justify-center">
         {children}
       </div>
     </div>
   );
 }
+
 
 function Hand({ cards, hidden=false, selectable=false, canPlay, onSelect }){
   return (
