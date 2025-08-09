@@ -75,7 +75,8 @@ function canPlay(card, top, chosenSuit, chain, aceBonus){
 }
 
 /* ===================== СОСТОЯНИЕ РАУНДА ===================== */
-function rankWeight(r){ const order={ "6":1,"7":2,"8":3,"9":4,"10":5,"J":6,"Q":7,"K":8,"A":9 }; return order[r]||0; }
+function rankWeight(r){ const order={ "6":1,"7":2,"8":3,"9":4,"" +
+"10":5,"J":6,"Q":7,"K":8,"A":9 }; return order[r]||0; }
 function cardTxt(c){ return `${c.rank}${c.suit}`; }
 
 function startRound(prev=null, seed){
@@ -167,8 +168,7 @@ export default function App(){
     if (netMode === "offline" && connected && roomCode && roomCode.length === 6) {
       joinRoom().catch(()=>{});
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, roomCode]);
+  }, [connected, roomCode, netMode]);
 
   /* ---------- Telegram init ---------- */
   useEffect(()=>{ (async()=>{
@@ -379,7 +379,7 @@ export default function App(){
       };
       pushGame(next);
     }
-  }, [state.hands[0].length, state.hands[1].length, state.roundOver]);
+  }, [state.hands, state.roundOver]); // небольшая чистка зависимостей
 
   /* ---------- Новый раунд / локальный сброс ---------- */
   function nextRound(){ if (state.gameOver?.winner!==null) return; pushGame(startRound(state, state.seed+1)); }
@@ -494,12 +494,13 @@ export default function App(){
 
         {/* игровое поле */}
         <Table>
-          {/* верхний игрок — Вика (имя НЕ переворачиваем; переворачиваются только карты) */}
+          {/* верхний игрок — Вика (имя НЕ переворачиваем; перевёрнуты только карты) */}
           <Seat label={`${state.pNames?.[1] || "Вика"}`} facing="down" highlight={state.current===1}>
             <Hand
+              rotated                           // <<< ВАЖНО: переворачиваем карты Вики
               cards={state.hands[1]}
-              hidden={!solo}                               // в SOLO показываем карты Вики
-              selectable={solo && state.current===1}       // кликать можно, если SOLO и её ход
+              hidden={!solo}                    // в SOLO показываем карты Вики
+              selectable={solo && state.current===1}
               canPlay={(c)=> playableTop.has(c.id)}
               onSelect={playCard}
             />
@@ -634,7 +635,7 @@ function Seat({label, children, facing, highlight}){
         {label}
       </div>
 
-      {/* ВАЖНО: без rotate-180, чтобы карты были «норм» */}
+      {/* без общей rotate: только сами карты внутри Hand умеют переворачиваться */}
       <div className="flex flex-wrap gap-2 items-center justify-center">
         {children}
       </div>
@@ -642,20 +643,21 @@ function Seat({label, children, facing, highlight}){
   );
 }
 
-
-function Hand({ cards, hidden=false, selectable=false, canPlay, onSelect }){
+/* === ОБНОВЛЕНО: поддержка переворота колоды/карт у верхнего игрока === */
+function Hand({ cards, hidden=false, selectable=false, canPlay, onSelect, rotated=false }){
   return (
     <div className="flex flex-wrap gap-2 items-center justify-center">
       {cards.map((c, i)=>{
         const can = selectable && canPlay ? canPlay(c) : false;
+        const hoverY = (!hidden && can) ? (rotated ? 6 : -6) : 0; // при повороте «поднимаем» визуально вверх
         return (
           <motion.button
             layout
             key={c.id+"-"+i}
             onClick={()=> onSelect && onSelect(c)}
             disabled={hidden || (selectable && !can)}
-            whileHover={(!hidden && can) ? { y: -6 } : {}}
-            initial={{ opacity: 0, y: hidden ? 0 : 12, scale: hidden ? 1 : 0.98 }}
+            whileHover={{ y: hoverY }}
+            initial={{ opacity: 0, y: hidden ? 0 : (rotated ? -12 : 12), scale: hidden ? 1 : 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={{ type:"spring", stiffness:420, damping:28 }}
           >
@@ -664,6 +666,7 @@ function Hand({ cards, hidden=false, selectable=false, canPlay, onSelect }){
               faceDown={hidden}
               selectable={selectable}
               disabled={hidden || (selectable && !can)}
+              rotated={rotated}
             />
           </motion.button>
         );
@@ -672,11 +675,11 @@ function Hand({ cards, hidden=false, selectable=false, canPlay, onSelect }){
   );
 }
 
-function PlayingCard({ card, faceDown=false, raised=false, selectable=false, disabled=false }){
+function PlayingCard({ card, faceDown=false, raised=false, selectable=false, disabled=false, rotated=false }){
   const red = card.suit==="♥" || card.suit==="♦";
   return (
     <motion.div
-      className={`w-16 h-24 md:w-20 md:h-28 rounded-xl bg-white shadow-xl border ${raised?"border-amber-400":"border-slate-300"} grid place-items-center relative`}
+      className={`w-16 h-24 md:w-20 md:h-28 rounded-xl bg-white shadow-xl border ${raised?"border-amber-400":"border-slate-300"} grid place-items-center relative ${rotated ? "rotate-180" : ""}`}
       style={{ boxShadow: "0 10px 20px rgba(0,0,0,.35)" }}
       layout
     >
