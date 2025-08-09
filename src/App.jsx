@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { DEFAULT_FIREBASE_CONFIG } from "../firebaseConfig.js";
 
 // ====== Firebase dynamic import ======
 let firebaseApp = null, firebaseDb = null, firebaseAuth = null;
@@ -31,16 +32,6 @@ async function ensureTelegram() {
 // ====== Game constants ======
 const SUITS = ["♠", "♥", "♦", "♣"];
 const RANKS = ["6", "7", "8", "9", "10", "J", "Q", "K", "A"];
-
-const DEFAULT_FIREBASE_CONFIG = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT.firebaseapp.com",
-  databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
-  projectId: "YOUR_PROJECT",
-  storageBucket: "YOUR_PROJECT.appspot.com",
-  messagingSenderId: "",
-  appId: ""
-};
 
 function mkDeck() {
   const cards = [];
@@ -86,6 +77,7 @@ function startRound(prev=null, seed){
 }
 
 export default function App(){
+  // Конфиг берём из файла
   const [cfg, setCfg] = useState({ ...DEFAULT_FIREBASE_CONFIG });
   const [connected, setConnected] = useState(false);
   const [netMode, setNetMode] = useState("offline");
@@ -100,6 +92,19 @@ export default function App(){
   const dbAPI = useRef(null);
   const roomRef = useRef(null);
 
+  // Автоподключение к Firebase при загрузке
+  useEffect(() => {
+    if (!connected) {
+      (async () => {
+        const api = await ensureFirebase(DEFAULT_FIREBASE_CONFIG);
+        dbAPI.current = api;
+        setConnected(true);
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Telegram init
   useEffect(()=>{ (async()=>{
     const tg = await ensureTelegram();
     if (!tg) return;
@@ -242,19 +247,25 @@ export default function App(){
           </div>
         </header>
 
+        {/* Панель конфигурации показываем только если ещё не подключились */}
+        {!connected && (
+          <div className="grid md:grid-cols-3 gap-3 mb-4">
+            <Panel title="Firebase Config">
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                {Object.keys(cfg).map((k)=> (
+                  <input key={k} className="px-2 py-1 rounded-lg bg-slate-900/60 border border-slate-700" placeholder={k} value={cfg[k]} onChange={e=>setCfg((p)=>({...p,[k]:e.target.value}))}/>
+                ))}
+              </div>
+              <button className="mt-2 px-3 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-600" onClick={applyConfig}>{connected?"Reapply Config":"Apply Config"}</button>
+            </Panel>
+          </div>
+        )}
+
         <div className="grid md:grid-cols-3 gap-3 mb-4">
-          <Panel title="Firebase Config">
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              {Object.keys(cfg).map((k)=> (
-                <input key={k} className="px-2 py-1 rounded-lg bg-slate-900/60 border border-slate-700" placeholder={k} value={cfg[k]} onChange={e=>setCfg((p)=>({...p,[k]:e.target.value}))}/>
-              ))}
-            </div>
-            <button className="mt-2 px-3 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-600" onClick={applyConfig}>{connected?"Reapply Config":"Apply Config"}</button>
-          </Panel>
           <Panel title="Online Room">
             <div className="flex gap-2 mb-2">
               <button className="px-3 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600" onClick={createRoom} disabled={!connected}>Create Room</button>
-              <input className="flex-1 px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700" placeholder="Enter 6‑digit code" value={roomCode} onChange={e=>setRoomCode(e.target.value)} />
+              <input className="flex-1 px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700" placeholder="Enter 6-digit code" value={roomCode} onChange={e=>setRoomCode(e.target.value)} />
               <button className="px-3 py-2 rounded-xl bg-amber-700 hover:bg-amber-600" onClick={joinRoom} disabled={!connected}>Join</button>
             </div>
             <div className="text-xs text-emerald-200">{netMode==="online"? `Room: ${roomCode} • You are ${playerId===0?"Player A":"Player B"}`: "Offline mode"}</div>
@@ -267,6 +278,7 @@ export default function App(){
             </div>
             <div className="text-[11px] opacity-70 mt-1">Ссылка вида: t.me/&lt;bot&gt;?startapp=ROOMCODE</div>
           </Panel>
+          <div />
         </div>
 
         <Table>
@@ -319,9 +331,9 @@ export default function App(){
         <details className="mt-6 bg-emerald-900/40 border border-emerald-800 rounded-2xl p-4">
           <summary className="cursor-pointer select-none font-semibold">Quick rules</summary>
           <ul className="list-disc pl-6 mt-3 text-sm space-y-1 opacity-90">
-            <li>Match suit or rank. 6→+2 chain, 7→+1 chain, 9→change suit, A→extra same‑suit play.</li>
+            <li>Match suit or rank. 6→+2 chain, 7→+1 chain, 9→change suit, A→extra same-suit play.</li>
             <li>During 6/7 chain only the same rank can be played; otherwise draw penalty.</li>
-            <li>When a player empties hand, the other scores remaining cards; Queens‑only invert score (deduct) with Q♠ = 40.</li>
+            <li>When a player empties hand, the other scores remaining cards; Queens-only invert score (deduct) with Q♠ = 40.</li>
             <li>First to 120+ loses. Reaching −120 via Queens instantly wins.</li>
           </ul>
         </details>
@@ -345,4 +357,5 @@ function PlayingCard({ card, faceDown=false, raised=false, selectable=false, dis
     </div>
   )}
 </div>); }
+
 
