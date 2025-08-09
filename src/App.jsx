@@ -8,6 +8,8 @@ async function ensureFirebase(cfg) {
   const { initializeApp } = await import("firebase/app");
   const { getDatabase, ref, onValue, set, update, get } = await import("firebase/database");
   const { getAuth, signInAnonymously } = await import("firebase/auth");
+  const DEFAULT_BOT_USERNAME = "pyatikantrop_online_bot"; // твой бот без @
+
   if (!firebaseApp) firebaseApp = initializeApp(cfg);
   if (!firebaseDb) firebaseDb = getDatabase(firebaseApp);
   if (!firebaseAuth) {
@@ -232,7 +234,28 @@ export default function App(){
   function resetLocal(){ setState(startRound(null)); setNetMode("offline"); setRoomCode(""); setBotUsername(""); }
 
   const playable = new Set(state.hands[state.current].filter(c=>canPlay(c, top, state.chosenSuit, state.chain, state.aceBonus)).map(c=>c.id));
-  function copyInvite(){ if (!roomCode || !botUsername) return alert("Enter Bot Username and have a Room Code"); const link = `https://t.me/${botUsername}?startapp=${roomCode}`; navigator.clipboard.writeText(link).then(()=> alert("Invite link copied!")); }
+function copyInvite() {
+  // код комнаты должен быть
+  if (!roomCode) return alert("Сначала создай комнату (Create Room)");
+  // имя бота: либо из поля, либо дефолт
+  const bot = (botUsername || DEFAULT_BOT_USERNAME).replace(/^@/, "");
+  const link = `https://t.me/${bot}?startapp=${roomCode}`;
+
+  // если внутри Telegram — открываем системный «поделиться» в Telegram
+  const tg = window?.Telegram?.WebApp;
+  if (tg && tg.openTelegramLink) {
+    // Вариант 1: открыть шэр-лист Telegram c заранее подставленной ссылкой и текстом
+    const share = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent("Заходи в комнату Пятикантропа!")}`;
+    tg.openTelegramLink(share);
+    try { tg.HapticFeedback?.impactOccurred?.("light"); } catch {}
+    return;
+  }
+
+  // В браузере — просто копируем в буфер
+  navigator.clipboard.writeText(link)
+    .then(() => alert("Ссылка приглашения скопирована:\n" + link))
+    .catch(() => alert("Скопируй вручную:\n" + link));
+}
 
   return (
     <div className="min-h-screen w-full bg-emerald-950/70" style={{backgroundImage:"radial-gradient(ellipse at center, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.7) 70%)"}}>
@@ -265,7 +288,12 @@ export default function App(){
           <Panel title="Online Room">
             <div className="flex gap-2 mb-2">
               <button className="px-3 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600" onClick={createRoom} disabled={!connected}>Create Room</button>
-              <input className="flex-1 px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700" placeholder="Enter 6-digit code" value={roomCode} onChange={e=>setRoomCode(e.target.value)} />
+<input
+  className="flex-1 px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700"
+  placeholder="Bot username (без @), напр. pyatikantrop_online_bot"
+  value={botUsername}
+  onChange={e=>setBotUsername(e.target.value.replace(/^@/, ""))}
+/>
               <button className="px-3 py-2 rounded-xl bg-amber-700 hover:bg-amber-600" onClick={joinRoom} disabled={!connected}>Join</button>
             </div>
             <div className="text-xs text-emerald-200">{netMode==="online"? `Room: ${roomCode} • You are ${playerId===0?"Player A":"Player B"}`: "Offline mode"}</div>
